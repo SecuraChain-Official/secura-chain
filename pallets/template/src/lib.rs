@@ -130,6 +130,8 @@ pub mod pallet {
 		RewardsClaimed(T::AccountId, BalanceOf<T>),
 		/// Rewards have been distributed [block_number, total_rewards]
 		RewardsDistributed(BlockNumberFor<T>, BalanceOf<T>),
+		/// A validator has been slashed [validator, amount, percentage]
+		ValidatorSlashed(T::AccountId, BalanceOf<T>, u32),
 	}
 
 	#[pallet::error]
@@ -152,6 +154,12 @@ pub mod pallet {
 		NominationNotFound,
 		/// No rewards to claim
 		NoRewards,
+		/// Invalid slash percentage
+		InvalidSlashPercentage,
+		/// Slash amount is zero
+		ZeroSlashAmount,
+		/// Insufficient stake for slashing
+		InsufficientStake,
 	}
 
 	#[pallet::hooks]
@@ -353,6 +361,43 @@ pub mod pallet {
 			
 			Ok(())
 		}
+
+		/// Slash a validator for misbehavior
+		#[pallet::call_index(5)]
+		#[pallet::weight(T::WeightInfo::do_something())]
+		pub fn slash_validator(
+			origin: OriginFor<T>,
+			validator: T::AccountId,
+			#[pallet::compact] slash_percent: u32,
+		) -> DispatchResult {
+			// Only allow governance or admin to slash
+			ensure_root(origin)?;
+			
+			// Ensure slash percent is valid (1-100%)
+			ensure!(slash_percent > 0 && slash_percent <= 100, Error::<T>::InvalidSlashPercentage);
+			
+			// Check if account is a validator
+			let validator_stake = Validators::<T>::get(&validator);
+			ensure!(validator_stake > BalanceOf::<T>::zero(), Error::<T>::NotValidator);
+			
+			// Calculate slash amount
+			let slash_amount = validator_stake
+				.checked_mul(&slash_percent.into())
+				.and_then(|r| r.checked_div(&100u32.into()))
+				.unwrap_or_else(Zero::zero);
+			
+			// Ensure slash amount is not zero
+			ensure!(!slash_amount.is_zero(), Error::<T>::ZeroSlashAmount);
+			
+			// Slash the validator's stake
+			Self::do_slash(&validator, slash_amount)?;
+			
+			// Emit event
+			Self::deposit_event(Event::ValidatorSlashed(validator, slash_amount, slash_percent));
+			
+			Ok(())
+		}
+
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -444,5 +489,30 @@ pub mod pallet {
 				.unwrap_or_else(Zero::zero);
 			Self::deposit_event(Event::RewardsDistributed(block_number, total_reward));
 		}
+
+		// Helper function to slash a validator
+		fn do_slash(validator: &T::AccountId, slash_amount: BalanceOf<T>) -> DispatchResult {
+			ensure!(!slash_amount.is_zero(), Error::<T>::ZeroSlashAmount);
+
+			let current_stake = Validators::<T>::get(validator);
+			let remaining_stake = current_stake.checked_sub(&slash_amount)
+				.ok_or(Error::<T>::InsufficientStake)?;
+
+			Validators::<T>::insert(validator, remaining_stake);
+
+			TotalValidatorStake::<T>::mutate(validator, |total| {
+				*total = total.checked_sub(&slash_amount).unwrap_or_else(Zero::zero);
+			});
+
+			TotalStaked::<T>::mutate(|total| {
+				*total = total.checked_sub(&slash_amount).unwrap_or_else(Zero::zero);
+			});
+
+			let _ = T::Currency::slash_reserved(validator, slash_amount);
+			
+			Ok(())
+		}
+
+
 	}
 }
