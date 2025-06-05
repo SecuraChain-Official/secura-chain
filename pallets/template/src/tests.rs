@@ -202,3 +202,51 @@ fn withdraw_nomination_fails_when_not_nominated() {
 		);
 	});
 }
+
+#[test]
+fn rewards_distribution_works() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Nominate validator
+		assert_ok!(TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 500));
+		
+		// Advance blocks to trigger reward distribution
+		System::set_block_number(2);
+		TemplateModule::on_initialize(2);
+		
+		// Check rewards were distributed
+		assert!(TemplateModule::pending_rewards(1) > 0);
+		assert!(TemplateModule::pending_rewards(2) > 0);
+		
+		// Claim rewards for validator
+		let validator_rewards = TemplateModule::pending_rewards(1);
+		assert_ok!(TemplateModule::claim_rewards(RuntimeOrigin::signed(1)));
+		
+		// Check rewards were claimed
+		assert_eq!(TemplateModule::pending_rewards(1), 0);
+		
+		// Claim rewards for nominator
+		let nominator_rewards = TemplateModule::pending_rewards(2);
+		assert_ok!(TemplateModule::claim_rewards(RuntimeOrigin::signed(2)));
+		
+		// Check rewards were claimed
+		assert_eq!(TemplateModule::pending_rewards(2), 0);
+		
+		// System emits events
+		System::assert_has_event(Event::RewardsClaimed(1, validator_rewards).into());
+		System::assert_has_event(Event::RewardsClaimed(2, nominator_rewards).into());
+	});
+}
+
+#[test]
+fn claim_rewards_fails_when_no_rewards() {
+	new_test_ext().execute_with(|| {
+		// Try to claim rewards when none exist
+		assert_noop!(
+			TemplateModule::claim_rewards(RuntimeOrigin::signed(1)),
+			Error::<Test>::NoRewards
+		);
+	});
+}

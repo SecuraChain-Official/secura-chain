@@ -107,9 +107,10 @@ pub const MAX_MESSAGE_LENGTH: u32 = 1024;
 pub const MESSAGE_TTL: BlockNumber = 10_000;
 
 // Staking constants
-pub const MIN_VALIDATOR_STAKE: Balance = 10_000 * UNIT;
+pub const MIN_VALIDATOR_STAKE: Balance = 1000 * UNIT;
 pub const MIN_NOMINATION: Balance = 100 * UNIT;
 pub const MAX_NOMINATIONS_PER_NOMINATOR: u32 = 16;
+pub const REWARD_RATE_PER_BLOCK: u32 = 1; // 0.01% per block
 
 // Unit = the base number of indivisible units for balances
 pub const UNIT: Balance = 1_000_000_000_000;

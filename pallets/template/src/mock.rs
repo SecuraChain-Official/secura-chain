@@ -73,6 +73,7 @@ parameter_types! {
 	pub const MinStake: Balance = 100;
 	pub const MinNomination: Balance = 10;
 	pub const MaxNominations: u32 = 4;
+	pub const RewardRate: u32 = 100; // 1% for testing
 }
 
 impl pallet_template::Config for Test {
@@ -81,6 +82,7 @@ impl pallet_template::Config for Test {
 	type MinStake = MinStake;
 	type MinNomination = MinNomination;
 	type MaxNominations = MaxNominations;
+	type RewardRate = RewardRate;
 	type WeightInfo = ();
 }
 

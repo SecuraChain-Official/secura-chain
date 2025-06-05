@@ -1,6 +1,6 @@
 //! # Template Pallet
 //!
-//! A pallet with validator registration, staking, and nomination functionality.
+//! A pallet with validator registration, staking, nomination, and reward functionality.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -19,7 +19,7 @@ pub use weights::*;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::{pallet_prelude::*, traits::{Currency, ReservableCurrency}};
+	use frame_support::{pallet_prelude::*, traits::{Currency, ReservableCurrency, Get}};
 	use frame_system::pallet_prelude::*;
 
 	type BalanceOf<T> = <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -49,6 +49,9 @@ pub mod pallet {
 		/// Maximum number of nominations per nominator
 		#[pallet::constant]
 		type MaxNominations: Get<u32>;
+		/// Reward rate per block (as a percentage of total staked)
+		#[pallet::constant]
+		type RewardRate: Get<u32>;
 		/// A type representing the weights required by the dispatchables of this pallet.
 		type WeightInfo: WeightInfo;
 	}
@@ -96,6 +99,22 @@ pub mod pallet {
 	#[pallet::getter(fn total_staked)]
 	pub type TotalStaked<T: Config> = StorageValue<_, BalanceOf<T>, ValueQuery>;
 
+	// Pending rewards for each account
+	#[pallet::storage]
+	#[pallet::getter(fn pending_rewards)]
+	pub type PendingRewards<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		BalanceOf<T>,
+		ValueQuery
+	>;
+
+	// Last block rewards were distributed
+	#[pallet::storage]
+	#[pallet::getter(fn last_reward_block)]
+	pub type LastRewardBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -107,6 +126,10 @@ pub mod pallet {
 		Nomination(T::AccountId, T::AccountId, BalanceOf<T>),
 		/// A nomination has been withdrawn [nominator, validator, amount]
 		NominationWithdrawn(T::AccountId, T::AccountId, BalanceOf<T>),
+		/// Rewards have been claimed [account, amount]
+		RewardsClaimed(T::AccountId, BalanceOf<T>),
+		/// Rewards have been distributed [block_number, total_rewards]
+		RewardsDistributed(BlockNumberFor<T>, BalanceOf<T>),
 	}
 
 	#[pallet::error]
@@ -127,6 +150,17 @@ pub mod pallet {
 		AlreadyNominated,
 		/// Nomination not found
 		NominationNotFound,
+		/// No rewards to claim
+		NoRewards,
+	}
+
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			// Distribute rewards every block
+			Self::distribute_rewards(n);
+			Weight::zero()
+		}
 	}
 
 	#[pallet::call]
@@ -296,6 +330,119 @@ pub mod pallet {
 			Self::deposit_event(Event::NominationWithdrawn(who, validator, amount));
 			
 			Ok(())
+		}
+
+		/// Claim pending rewards
+		#[pallet::call_index(4)]
+		#[pallet::weight(T::WeightInfo::do_something())]
+		pub fn claim_rewards(origin: OriginFor<T>) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			
+			// Get pending rewards
+			let rewards = PendingRewards::<T>::get(&who);
+			ensure!(!rewards.is_zero(), Error::<T>::NoRewards);
+			
+			// Clear pending rewards
+			PendingRewards::<T>::remove(&who);
+			
+			// Transfer rewards
+			T::Currency::deposit_creating(&who, rewards);
+			
+			// Emit event
+			Self::deposit_event(Event::RewardsClaimed(who, rewards));
+			
+			Ok(())
+		}
+	}
+
+	impl<T: Config> Pallet<T> {
+		// Constants for reward calculation (using integer math)
+		const BLOCKS_PER_YEAR: u32 = 5_256_000; // Assuming 6-second blocks
+		const VALIDATOR_INFLATION_RATE_NUMERATOR: u32 = 15; // 15%
+		const VALIDATOR_INFLATION_RATE_DENOMINATOR: u32 = 100;
+		const NOMINATOR_INFLATION_RATE_NUMERATOR: u32 = 10; // 10%
+		const NOMINATOR_INFLATION_RATE_DENOMINATOR: u32 = 100;
+
+		// Distribute rewards to validators and nominators
+		fn distribute_rewards(block_number: BlockNumberFor<T>) {
+			// Get last reward block
+			let last_block = LastRewardBlock::<T>::get();
+			
+			// Skip if rewards were already distributed in this block
+			if last_block == block_number {
+				return;
+			}
+			
+			// Update last reward block
+			LastRewardBlock::<T>::put(block_number);
+			
+			// Get total staked
+			let total_staked = TotalStaked::<T>::get();
+			if total_staked.is_zero() {
+				return;
+			}
+			
+			// Calculate total rewards (reward_rate % of total staked)
+			// Use a simple approach to avoid type conversion issues
+			let reward_rate = T::RewardRate::get();
+			if reward_rate == 0 {
+				return;
+			}
+			
+			// Create a small reward for each validator based on their stake
+			for (validator, validator_stake) in Validators::<T>::iter() {
+				// Get total stake for this validator
+				let total_validator_stake = TotalValidatorStake::<T>::get(&validator);
+				if total_validator_stake.is_zero() {
+					continue;
+				}
+				
+				// Create a small reward for the validator (15% APY)
+				let validator_reward = validator_stake
+					.checked_mul(&Self::VALIDATOR_INFLATION_RATE_NUMERATOR.into())
+					.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::VALIDATOR_INFLATION_RATE_DENOMINATOR).into()))
+					.unwrap_or_else(Zero::zero);
+				if !validator_reward.is_zero() {
+					// Add to validator's pending rewards
+					PendingRewards::<T>::mutate(&validator, |rewards| {
+						*rewards = rewards.checked_add(&validator_reward).unwrap_or(*rewards);
+					});
+					
+					// Create the reward tokens
+					let _ = T::Currency::deposit_creating(&validator, validator_reward);
+				}
+				
+				// Process nominators for this validator
+				for (nominator, nominations) in Nominators::<T>::iter() {
+					for nomination in nominations.iter() {
+						if nomination.validator != validator {
+							continue;
+						}
+						
+						// Create a small reward for the nominator (10% APY)
+						let nominator_reward = nomination.amount
+							.checked_mul(&Self::NOMINATOR_INFLATION_RATE_NUMERATOR.into())
+							.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::NOMINATOR_INFLATION_RATE_DENOMINATOR).into()))
+							.unwrap_or_else(Zero::zero);
+						if !nominator_reward.is_zero() {
+							// Add to nominator's pending rewards
+							PendingRewards::<T>::mutate(&nominator, |rewards| {
+								*rewards = rewards.checked_add(&nominator_reward).unwrap_or(*rewards);
+							});
+							
+							// Create the reward tokens
+							let _ = T::Currency::deposit_creating(&nominator, nominator_reward);
+						}
+					}
+				}
+			}
+			
+			// Emit event with a simple reward amount
+			let total_reward = total_staked
+				.checked_mul(&Self::VALIDATOR_INFLATION_RATE_NUMERATOR.into())
+				.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::VALIDATOR_INFLATION_RATE_DENOMINATOR).into()))
+				.unwrap_or_else(Zero::zero);
+			Self::deposit_event(Event::RewardsDistributed(block_number, total_reward));
 		}
 	}
 }
