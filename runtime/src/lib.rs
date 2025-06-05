@@ -106,6 +106,9 @@ pub const BLOCK_HASH_COUNT: BlockNumber = 2400;
 pub const MAX_MESSAGE_LENGTH: u32 = 1024;
 pub const MESSAGE_TTL: BlockNumber = 10_000;
 
+// Staking constants
+pub const MIN_VALIDATOR_STAKE: Balance = 10_000 * UNIT;
+
 // Unit = the base number of indivisible units for balances
 pub const UNIT: Balance = 1_000_000_000_000;
 pub const MILLI_UNIT: Balance = 1_000_000_000;
