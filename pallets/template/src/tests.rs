@@ -19,6 +19,9 @@ fn register_validator_works() {
 		// Check total staked
 		assert_eq!(TemplateModule::total_staked(), 500);
 		
+		// Check total validator stake
+		assert_eq!(TemplateModule::total_validator_stake(1), 500);
+		
 		// System emits event
 		System::assert_has_event(Event::ValidatorRegistered(1, 500).into());
 	});
@@ -87,6 +90,115 @@ fn remove_validator_fails_when_not_validator() {
 		assert_noop!(
 			TemplateModule::remove_validator(RuntimeOrigin::signed(1)),
 			Error::<Test>::NotValidator
+		);
+	});
+}
+
+#[test]
+fn nominate_works() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Nominate validator
+		assert_ok!(TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 100));
+		
+		// Check nomination is stored
+		let nominations = TemplateModule::nominators(2);
+		assert_eq!(nominations.len(), 1);
+		assert_eq!(nominations[0].validator, 1);
+		assert_eq!(nominations[0].amount, 100);
+		
+		// Check total validator stake is updated
+		assert_eq!(TemplateModule::total_validator_stake(1), 600);
+		
+		// Check total staked is updated
+		assert_eq!(TemplateModule::total_staked(), 600);
+		
+		// System emits event
+		System::assert_has_event(Event::Nomination(2, 1, 100).into());
+	});
+}
+
+#[test]
+fn nominate_fails_when_validator_not_exists() {
+	new_test_ext().execute_with(|| {
+		// Try to nominate non-existent validator
+		assert_noop!(
+			TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 100),
+			Error::<Test>::NotValidator
+		);
+	});
+}
+
+#[test]
+fn nominate_fails_with_insufficient_amount() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Try to nominate with less than minimum
+		assert_noop!(
+			TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 5),
+			Error::<Test>::NominationBelowMinimum
+		);
+	});
+}
+
+#[test]
+fn nominate_fails_when_already_nominated() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Nominate validator
+		assert_ok!(TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 100));
+		
+		// Try to nominate again
+		assert_noop!(
+			TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 100),
+			Error::<Test>::AlreadyNominated
+		);
+	});
+}
+
+#[test]
+fn withdraw_nomination_works() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Nominate validator
+		assert_ok!(TemplateModule::nominate(RuntimeOrigin::signed(2), 1, 100));
+		
+		// Withdraw nomination
+		assert_ok!(TemplateModule::withdraw_nomination(RuntimeOrigin::signed(2), 1));
+		
+		// Check nomination is removed
+		let nominations = TemplateModule::nominators(2);
+		assert_eq!(nominations.len(), 0);
+		
+		// Check total validator stake is updated
+		assert_eq!(TemplateModule::total_validator_stake(1), 500);
+		
+		// Check total staked is updated
+		assert_eq!(TemplateModule::total_staked(), 500);
+		
+		// System emits event
+		System::assert_has_event(Event::NominationWithdrawn(2, 1, 100).into());
+	});
+}
+
+#[test]
+fn withdraw_nomination_fails_when_not_nominated() {
+	new_test_ext().execute_with(|| {
+		// Register validator
+		assert_ok!(TemplateModule::register_validator(RuntimeOrigin::signed(1), 500));
+		
+		// Try to withdraw non-existent nomination
+		assert_noop!(
+			TemplateModule::withdraw_nomination(RuntimeOrigin::signed(2), 1),
+			Error::<Test>::NominationNotFound
 		);
 	});
 }

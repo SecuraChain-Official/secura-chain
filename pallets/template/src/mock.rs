@@ -1,6 +1,6 @@
 use crate as pallet_template;
 use frame_support::{
-	parameter_types, traits::{ConstU32, ConstU64, ConstU128}
+	parameter_types, traits::{ConstU16, ConstU32, ConstU64, ConstU128}
 };
 use frame_system as system;
 use sp_core::H256;
@@ -71,12 +71,16 @@ impl pallet_balances::Config for Test {
 
 parameter_types! {
 	pub const MinStake: Balance = 100;
+	pub const MinNomination: Balance = 10;
+	pub const MaxNominations: u32 = 4;
 }
 
 impl pallet_template::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type Currency = Balances;
 	type MinStake = MinStake;
+	type MinNomination = MinNomination;
+	type MaxNominations = MaxNominations;
 	type WeightInfo = ();
 }
 
