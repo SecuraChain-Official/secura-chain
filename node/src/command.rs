@@ -7,12 +7,12 @@ use crate::{
 use frame_benchmarking_cli::{BenchmarkCmd, ExtrinsicFactory, SUBSTRATE_REFERENCE_HARDWARE};
 use sc_cli::SubstrateCli;
 use sc_service::PartialComponents;
-use solochain_template_runtime::{Block, EXISTENTIAL_DEPOSIT};
+use secura_chain_runtime::{Block, EXISTENTIAL_DEPOSIT};
 use sp_keyring::Sr25519Keyring;
 
 impl SubstrateCli for Cli {
 	fn impl_name() -> String {
-		"Substrate Node".into()
+		"Secura Chain Node".into()
 	}
 
 	fn impl_version() -> String {
@@ -32,7 +32,7 @@ impl SubstrateCli for Cli {
 	}
 
 	fn copyright_start_year() -> i32 {
-		2017
+		2023
 	}
 
 	fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
@@ -181,8 +181,8 @@ pub fn run() -> sc_cli::Result<()> {
 				match config.network.network_backend.unwrap_or_default() {
 					sc_network::config::NetworkBackendType::Libp2p => service::new_full::<
 						sc_network::NetworkWorker<
-							solochain_template_runtime::opaque::Block,
-							<solochain_template_runtime::opaque::Block as sp_runtime::traits::Block>::Hash,
+							secura_chain_runtime::opaque::Block,
+							<secura_chain_runtime::opaque::Block as sp_runtime::traits::Block>::Hash,
 						>,
 					>(config)
 					.map_err(sc_cli::Error::Service),
