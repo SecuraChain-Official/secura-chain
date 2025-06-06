@@ -1,21 +1,6 @@
-// Copyright 2023 Secura Chain Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 //! # Template Pallet
 //!
 //! A pallet with validator registration, staking, nomination, and reward functionality.
-
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -45,6 +30,9 @@ pub mod pallet {
 		pub validator: AccountId,
 		pub amount: Balance,
 	}
+
+	// Define EraIndex type
+	pub type EraIndex = u32;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
@@ -125,10 +113,15 @@ pub mod pallet {
 		ValueQuery
 	>;
 
-	// Last block rewards were distributed
+	// Current era index
 	#[pallet::storage]
-	#[pallet::getter(fn last_reward_block)]
-	pub type LastRewardBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+	#[pallet::getter(fn current_era)]
+	pub type CurrentEra<T: Config> = StorageValue<_, EraIndex, ValueQuery>;
+
+	// Start block of the current era
+	#[pallet::storage]
+	#[pallet::getter(fn era_start_block)]
+	pub type EraStartBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -144,7 +137,7 @@ pub mod pallet {
 		/// Rewards have been claimed [account, amount]
 		RewardsClaimed(T::AccountId, BalanceOf<T>),
 		/// Rewards have been distributed [block_number, total_rewards]
-		RewardsDistributed(BlockNumberFor<T>, BalanceOf<T>),
+		RewardsDistributed(EraIndex, BalanceOf<T>),
 		/// A validator has been slashed [validator, amount, percentage]
 		ValidatorSlashed(T::AccountId, BalanceOf<T>, u32),
 	}
@@ -180,9 +173,23 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
-			// Distribute rewards every block
-			Self::distribute_rewards(n);
-			Weight::zero()
+			// Check if it's time for a new era
+			let era_duration = BlockNumberFor::<T>::from(Self::ERA_DURATION);
+			let current_era = Self::current_era();
+			let era_start_block = Self::era_start_block();
+			
+			if n >= era_start_block + era_duration {
+				// Start a new era
+				CurrentEra::<T>::put(current_era + 1);
+				EraStartBlock::<T>::put(n);
+				
+				// Distribute rewards for the previous era
+				Self::distribute_rewards(current_era);
+				
+				Weight::from_parts(10_000_000, 0)
+			} else {
+				Weight::from_parts(1_000_000, 0)
+			}
 		}
 	}
 
@@ -412,7 +419,6 @@ pub mod pallet {
 			
 			Ok(())
 		}
-
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -423,19 +429,11 @@ pub mod pallet {
 		const NOMINATOR_INFLATION_RATE_NUMERATOR: u32 = 10; // 10%
 		const NOMINATOR_INFLATION_RATE_DENOMINATOR: u32 = 100;
 
+		// Era duration in blocks
+    	const ERA_DURATION: u32 = 14_400; // 1 day with 6-second blocks
+		
 		// Distribute rewards to validators and nominators
-		fn distribute_rewards(block_number: BlockNumberFor<T>) {
-			// Get last reward block
-			let last_block = LastRewardBlock::<T>::get();
-			
-			// Skip if rewards were already distributed in this block
-			if last_block == block_number {
-				return;
-			}
-			
-			// Update last reward block
-			LastRewardBlock::<T>::put(block_number);
-			
+		fn distribute_rewards(era: EraIndex) {
 			// Get total staked
 			let total_staked = TotalStaked::<T>::get();
 			if total_staked.is_zero() {
@@ -443,13 +441,12 @@ pub mod pallet {
 			}
 			
 			// Calculate total rewards (reward_rate % of total staked)
-			// Use a simple approach to avoid type conversion issues
 			let reward_rate = T::RewardRate::get();
 			if reward_rate == 0 {
 				return;
 			}
 			
-			// Create a small reward for each validator based on their stake
+			// Create rewards for validators and nominators
 			for (validator, validator_stake) in Validators::<T>::iter() {
 				// Get total stake for this validator
 				let total_validator_stake = TotalValidatorStake::<T>::get(&validator);
@@ -457,11 +454,14 @@ pub mod pallet {
 					continue;
 				}
 				
-				// Create a small reward for the validator (15% APY)
+				// Calculate validator's reward
 				let validator_reward = validator_stake
 					.checked_mul(&Self::VALIDATOR_INFLATION_RATE_NUMERATOR.into())
 					.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::VALIDATOR_INFLATION_RATE_DENOMINATOR).into()))
+					.unwrap_or_else(Zero::zero)
+					.checked_mul(&Self::ERA_DURATION.into())
 					.unwrap_or_else(Zero::zero);
+				
 				if !validator_reward.is_zero() {
 					// Add to validator's pending rewards
 					PendingRewards::<T>::mutate(&validator, |rewards| {
@@ -479,11 +479,14 @@ pub mod pallet {
 							continue;
 						}
 						
-						// Create a small reward for the nominator (10% APY)
+						// Calculate nominator's reward
 						let nominator_reward = nomination.amount
 							.checked_mul(&Self::NOMINATOR_INFLATION_RATE_NUMERATOR.into())
 							.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::NOMINATOR_INFLATION_RATE_DENOMINATOR).into()))
+							.unwrap_or_else(Zero::zero)
+							.checked_mul(&Self::ERA_DURATION.into())
 							.unwrap_or_else(Zero::zero);
+						
 						if !nominator_reward.is_zero() {
 							// Add to nominator's pending rewards
 							PendingRewards::<T>::mutate(&nominator, |rewards| {
@@ -497,13 +500,16 @@ pub mod pallet {
 				}
 			}
 			
-			// Emit event with a simple reward amount
+			// Emit event with total rewards for the era
 			let total_reward = total_staked
 				.checked_mul(&Self::VALIDATOR_INFLATION_RATE_NUMERATOR.into())
 				.and_then(|r| r.checked_div(&(Self::BLOCKS_PER_YEAR * Self::VALIDATOR_INFLATION_RATE_DENOMINATOR).into()))
+				.unwrap_or_else(Zero::zero)
+				.checked_mul(&Self::ERA_DURATION.into())
 				.unwrap_or_else(Zero::zero);
-			Self::deposit_event(Event::RewardsDistributed(block_number, total_reward));
-		}
+			
+			Self::deposit_event(Event::RewardsDistributed(era, total_reward));
+    	}
 
 		// Helper function to slash a validator
 		fn do_slash(validator: &T::AccountId, slash_amount: BalanceOf<T>) -> DispatchResult {
@@ -527,7 +533,5 @@ pub mod pallet {
 			
 			Ok(())
 		}
-
-
 	}
 }
